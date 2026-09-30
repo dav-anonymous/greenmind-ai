@@ -6,6 +6,16 @@ app = Flask(__name__)
 model_path = os.path.join(os.path.dirname(__file__), 'crop_model.joblib')
 model = joblib.load(model_path)
 
+@app.after_request
+def allow_prediction_from_browser(response):
+    # The dashboard also opens directly from file:// (Origin: null).
+    # Prediction is a public endpoint and does not use browser credentials.
+    if request.path == '/predict':
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
