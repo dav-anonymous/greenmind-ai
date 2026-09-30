@@ -1,0 +1,1413 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GreenMind Smart Farm - ระบบควบคุมฟาร์มอัจฉริยะ</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- MQTT.js over WebSocket (WSS) สำหรับส่งคำสั่ง Real-time < 50ms -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Prompt', 'sans-serif'] },
+                    colors: {
+                        farm: {
+                            50: '#ecfdf5',
+                            100: '#d1fae5',
+                            500: '#10b981',
+                            600: '#059669',
+                            700: '#047857',
+                            900: '#064e3b'
+                        }
+                    },
+                    animation: {
+                        'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'slide-in': 'slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1)'
+                    },
+                    keyframes: {
+                        slideIn: {
+                            '0%': { transform: 'translateX(100%)', opacity: '0' },
+                            '100%': { transform: 'translateX(0)', opacity: '1' }
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body { background-color: #f8fafc; -webkit-font-smoothing: antialiased; }
+        .status-active { box-shadow: 0 0 15px 3px rgba(16, 185, 129, 0.6); animation: pulse-green 2s infinite; }
+        @keyframes pulse-green {
+            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { box-shadow: 0 0 0 12px rgba(16, 185, 129, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+        #toast-container { z-index: 9999; }
+    </style>
+</head>
+<body class="text-slate-800 antialiased selection:bg-farm-500 selection:text-white">
+
+    <!-- Top Navigation -->
+    <nav class="bg-white border-b border-slate-200 shadow-sm sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16 items-center">
+                <!-- Logo & Brand -->
+                <div class="flex items-center gap-3">
+                    <div class="bg-gradient-to-tr from-farm-600 to-farm-500 text-white p-2.5 rounded-xl shadow-md shadow-farm-500/20">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+                    </div>
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h1 class="text-lg font-bold text-slate-800 leading-tight">GreenMind Smart Farm</h1>
+                            <span class="bg-farm-100 text-farm-700 text-[10px] font-semibold px-2 py-0.5 rounded-full border border-farm-200">CONTROL CENTER</span>
+                        </div>
+                        <p class="text-xs text-slate-500 font-medium">ระบบควบคุมอุปกรณ์ฟาร์มอัจฉริยะ (Real-time MQTT)</p>
+                    </div>
+                </div>
+
+                <!-- Status Badges & Quick Links -->
+                <div class="flex items-center gap-3">
+                    <!-- ESP32 Online/Offline Badge -->
+                    <div id="espStatusBadge" class="text-xs font-semibold bg-rose-50 text-rose-600 border border-rose-200 px-3 py-1.5 rounded-full flex items-center gap-2 transition-all">
+                        <span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
+                        <span id="espStatusText">ESP32: OFFLINE</span>
+                    </div>
+
+                    <!-- MQTT Connection Badge -->
+                    <div id="mqttStatusBadge" class="hidden sm:flex text-xs font-semibold bg-slate-100 text-slate-500 px-3 py-1.5 rounded-full items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-slate-400"></span>
+                        <span id="mqttStatusText">MQTT: Connecting...</span>
+                    </div>
+
+                    <!-- Link to Grafana Dashboard -->
+                    <a id="grafanaLink" href="https://us-east-1-1.aws.cloud2.influxdata.com" target="_blank" rel="noopener noreferrer" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-200 text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5 transition-colors shadow-sm">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                        <span>กราฟ Grafana</span>
+                    </a>
+
+                    <!-- Settings Button -->
+                    <button onclick="openModal('settingsModal')" class="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors" title="ตั้งค่าการเชื่อมต่อ">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+        
+        <!-- ========================================== -->
+        <!-- 1. Header Control Bar (Mode & Emergency)  -->
+        <!-- ========================================== -->
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col md:flex-row gap-6 justify-between items-start md:items-center">
+            <div class="flex-1 w-full md:w-auto">
+                <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">โหมดการทำงานระบบ</label>
+                <div class="inline-flex p-1 bg-slate-100 rounded-xl w-full sm:w-auto">
+                    <button id="btnModeManual" onclick="setSystemMode('manual')" class="flex-1 sm:flex-initial py-2.5 px-6 rounded-lg font-semibold text-sm transition-all bg-white text-slate-800 shadow-sm">
+                        🖐 MANUAL (สั่งการเอง)
+                    </button>
+                    <button id="btnModeAuto" onclick="setSystemMode('auto')" class="flex-1 sm:flex-initial py-2.5 px-6 rounded-lg font-semibold text-sm transition-all text-slate-500 hover:text-slate-800">
+                        🤖 AUTO (เปิดใช้กฎอัตโนมัติ)
+                    </button>
+                </div>
+            </div>
+
+            <!-- Emergency Stop Button -->
+            <div class="w-full md:w-auto flex justify-end">
+                <button onclick="emergencyStop()" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-rose-50 hover:bg-rose-100 border border-rose-300 text-rose-600 font-bold py-3 px-5 rounded-xl transition-all shadow-sm active:scale-95">
+                    <svg class="w-5 h-5 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/></svg>
+                    <span>ดับอุปกรณ์ทั้งหมด (Emergency Stop)</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- 2. AI Recommendation & Plant Target Bar    -->
+        <!-- ========================================== -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- Card: Live AI Plant Recommender (Render API) -->
+            <div class="bg-gradient-to-br from-farm-900 to-farm-700 text-white rounded-2xl p-6 shadow-md relative overflow-hidden flex flex-col justify-between">
+                <div class="absolute -right-8 -bottom-8 w-36 h-36 bg-white/5 rounded-full pointer-events-none"></div>
+                <div>
+                    <div class="flex items-center justify-between mb-4">
+                        <span class="text-xs font-semibold bg-white/20 text-white px-2.5 py-1 rounded-full uppercase tracking-wider flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                            AI Live Recommendation
+                        </span>
+                        <button onclick="fetchAiPrediction()" class="text-xs text-farm-100 hover:text-white underline">รีเฟรช AI</button>
+                    </div>
+                    <p class="text-xs text-farm-100 mb-1">พืชที่โมเดล AI ตรวจพบว่าเหมาะสมที่สุดขณะนี้:</p>
+                    <h3 id="aiCropName" class="text-2xl font-bold tracking-tight text-white mb-2">กำลังรอผล AI...</h3>
+                    <p id="aiCropDesc" class="text-xs text-farm-100 leading-relaxed mb-4">วิเคราะห์จากความชื้น, อุณหภูมิ และธาตุ N, P, K จากเซ็นเซอร์จริง</p>
+                </div>
+                <button onclick="applyAiRecommendation()" id="btnApplyAi" class="w-full py-2.5 px-4 bg-white text-farm-900 font-bold text-sm rounded-xl hover:bg-farm-50 transition-all shadow-sm">
+                    🚀 ใช้สูตรพืชนี้เป็นเป้าหมายทันที
+                </button>
+            </div>
+
+            <!-- Card: Target Crop Selection & Plant Management -->
+            <div class="lg:col-span-2 bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col justify-between">
+                <div>
+                    <div class="flex items-center justify-between mb-3">
+                        <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider">เป้าหมายการปลูกปัจจุบัน (Target Crop)</label>
+                        <button onclick="openPlantModal()" class="text-xs font-semibold text-farm-600 hover:text-farm-700 flex items-center gap-1">
+                            <span>+ เพิ่ม / จัดการข้อมูลพืช</span>
+                        </button>
+                    </div>
+                    
+                    <div class="flex flex-col sm:flex-row gap-4 mb-4">
+                        <select id="targetCropSelect" onchange="onTargetCropChanged()" class="flex-1 bg-slate-50 border border-slate-200 text-slate-800 py-3 px-4 rounded-xl font-semibold outline-none focus:border-farm-500 cursor-pointer text-base">
+                            <!-- รายการพืชจะถูกโหลดจาก JavaScript (15 พืชเริ่มต้น + พืชที่ผู้ใช้เพิ่มเอง) -->
+                        </select>
+                        <button onclick="editCurrentPlant()" class="py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-sm transition-colors">
+                            ✏️ ดู / แก้ไขค่า
+                        </button>
+                    </div>
+
+                    <!-- แสดงสรุปความต้องการของพืชที่เลือก -->
+                    <div id="plantRequirementsBar" class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-xs">
+                        <!-- Rendered by JS -->
+                    </div>
+                </div>
+
+                <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                    <span>💡 เมื่อเลือกพืช ระบบจะปรับปรุงกฎการให้น้ำและปุ๋ยโดยอัตโนมัติ</span>
+                    <span id="targetCropStatus" class="font-medium text-farm-600">พร้อมใช้งาน</span>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ========================================== -->
+        <!-- 3. Hardware Actuators (Relay Channels)     -->
+        <!-- ========================================== -->
+        <div>
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-xl font-bold text-slate-800 flex items-center gap-2">
+                        <svg class="w-6 h-6 text-farm-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                        สวิตช์และวาล์วควบคุม (Hardware Relays)
+                    </h2>
+                    <p class="text-xs text-slate-500">สั่งงานและซิงค์สถานะจริงกับบอร์ด ESP32 ผ่านช่องทาง Real-time MQTT</p>
+                </div>
+                <div class="text-xs text-slate-400 font-medium">
+                    ตอบสนองภายใน <span class="text-farm-600 font-bold">&lt; 50 ms</span>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                
+                <!-- Relay 2: วาล์วน้ำเปล่า -->
+                <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col justify-between relative group hover:border-farm-200 transition-all">
+                    <div>
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="w-12 h-12 bg-cyan-50 text-cyan-500 rounded-xl flex items-center justify-center text-2xl shadow-sm border border-cyan-100">🚿</div>
+                            <div class="flex items-center gap-2">
+                                <span id="text_relay_2" class="text-xs font-bold text-slate-400 uppercase">OFF</span>
+                                <div id="dot_relay_2" class="w-3.5 h-3.5 rounded-full bg-slate-300 transition-colors"></div>
+                            </div>
+                        </div>
+                        <h3 class="text-lg font-bold text-slate-800 mb-1">วาล์วน้ำเปล่า</h3>
+                        <p class="text-xs text-slate-500 mb-4">Relay 2 (Pin 14) • รดน้ำสะอาดทั่วแปลง</p>
+                        <div id="countdown_relay_2" class="text-xs font-bold text-farm-600 mb-3 h-4"></div>
+                    </div>
+                    <div class="space-y-2">
+                        <button id="btn_toggle_relay_2" onclick="toggleRelay('relay_2', 'วาล์วน้ำเปล่า')" class="w-full py-2.5 px-4 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 font-semibold rounded-xl text-sm transition-all active:scale-98">
+                            เปิดทันที (สลับสถานะ)
+                        </button>
+                        <button onclick="openTimerModal('relay_2', 'วาล์วน้ำเปล่า', '🚿')" class="w-full py-2 px-3 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 font-medium rounded-xl text-xs transition-colors flex items-center justify-center gap-1.5">
+                            <span>⏱️ ตั้งเวลาเปิดใช้งาน</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Relay 3: ปั๊มวิตามิน A -->
+                <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col justify-between relative group hover:border-farm-200 transition-all">
+                    <div>
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="w-12 h-12 bg-amber-50 text-amber-500 rounded-xl flex items-center justify-center text-2xl shadow-sm border border-amber-100">🧪</div>
+                            <div class="flex items-center gap-2">
+                                <span id="text_relay_3" class="text-xs font-bold text-slate-400 uppercase">OFF</span>
+                                <div id="dot_relay_3" class="w-3.5 h-3.5 rounded-full bg-slate-300 transition-colors"></div>
+                            </div>
+                        </div>
+                        <h3 class="text-lg font-bold text-slate-800 mb-1">ปั๊มวิตามิน A</h3>
+                        <p class="text-xs text-slate-500 mb-4">Relay 3 (Pin 27) • จ่ายธาตุอาหาร N, K</p>
+                        <div id="countdown_relay_3" class="text-xs font-bold text-farm-600 mb-3 h-4"></div>
+                    </div>
+                    <div class="space-y-2">
+                        <button id="btn_toggle_relay_3" onclick="toggleRelay('relay_3', 'ปั๊มวิตามิน A')" class="w-full py-2.5 px-4 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 font-semibold rounded-xl text-sm transition-all active:scale-98">
+                            เปิดทันที (สลับสถานะ)
+                        </button>
+                        <button onclick="openTimerModal('relay_3', 'ปั๊มวิตามิน A', '🧪')" class="w-full py-2 px-3 bg-amber-50 hover:bg-amber-100 text-amber-700 font-medium rounded-xl text-xs transition-colors flex items-center justify-center gap-1.5">
+                            <span>⏱️ ตั้งเวลาเปิดใช้งาน</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Relay 4: ปั๊มวิตามิน B -->
+                <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col justify-between relative group hover:border-farm-200 transition-all">
+                    <div>
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="w-12 h-12 bg-purple-50 text-purple-500 rounded-xl flex items-center justify-center text-2xl shadow-sm border border-purple-100">🔬</div>
+                            <div class="flex items-center gap-2">
+                                <span id="text_relay_4" class="text-xs font-bold text-slate-400 uppercase">OFF</span>
+                                <div id="dot_relay_4" class="w-3.5 h-3.5 rounded-full bg-slate-300 transition-colors"></div>
+                            </div>
+                        </div>
+                        <h3 class="text-lg font-bold text-slate-800 mb-1">ปั๊มวิตามิน B</h3>
+                        <p class="text-xs text-slate-500 mb-4">Relay 4 (Pin 26) • เร่งการเจริญเติบโต P</p>
+                        <div id="countdown_relay_4" class="text-xs font-bold text-farm-600 mb-3 h-4"></div>
+                    </div>
+                    <div class="space-y-2">
+                        <button id="btn_toggle_relay_4" onclick="toggleRelay('relay_4', 'ปั๊มวิตามิน B')" class="w-full py-2.5 px-4 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 font-semibold rounded-xl text-sm transition-all active:scale-98">
+                            เปิดทันที (สลับสถานะ)
+                        </button>
+                        <button onclick="openTimerModal('relay_4', 'ปั๊มวิตามิน B', '🔬')" class="w-full py-2 px-3 bg-purple-50 hover:bg-purple-100 text-purple-700 font-medium rounded-xl text-xs transition-colors flex items-center justify-center gap-1.5">
+                            <span>⏱️ ตั้งเวลาเปิดใช้งาน</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Relay 1: ปั๊มน้ำหลัก (Main Pump) -->
+                <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col justify-between relative group hover:border-farm-200 transition-all">
+                    <div>
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="w-12 h-12 bg-emerald-50 text-farm-500 rounded-xl flex items-center justify-center text-2xl shadow-sm border border-emerald-100">⚡</div>
+                            <div class="flex items-center gap-2">
+                                <span id="text_relay_1" class="text-xs font-bold text-slate-400 uppercase">OFF</span>
+                                <div id="dot_relay_1" class="w-3.5 h-3.5 rounded-full bg-slate-300 transition-colors"></div>
+                            </div>
+                        </div>
+                        <h3 class="text-lg font-bold text-slate-800 mb-1">ปั๊มน้ำหลัก</h3>
+                        <p class="text-xs text-slate-500 mb-4">Relay 1 (Pin 33) • ทำงานร่วมกับวาล์ว</p>
+                        <div id="countdown_relay_1" class="text-xs font-bold text-farm-600 mb-3 h-4"></div>
+                    </div>
+                    <div class="space-y-2">
+                        <button id="btn_toggle_relay_1" onclick="toggleRelay('relay_1', 'ปั๊มน้ำหลัก')" class="w-full py-2.5 px-4 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 font-semibold rounded-xl text-sm transition-all active:scale-98">
+                            เปิด/ปิด ปั๊มเมน
+                        </button>
+                        <div class="text-[11px] text-center text-slate-400 py-1">
+                            (เปิดอัตโนมัติเมื่อเปิดวาล์วใด ๆ)
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- 4. Smart Automation Rules Section          -->
+        <!-- ========================================== -->
+        <div>
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-xl font-bold text-slate-800 flex items-center gap-2">
+                        <svg class="w-6 h-6 text-farm-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+                        กฎอัตโนมัติอัจฉริยะ (Smart Rules)
+                    </h2>
+                    <p class="text-xs text-slate-500">กฎที่กำลังทำงานในโหมด AUTO (ไม่สูญหายเมื่อสลับโหมด หรือเปลี่ยนพืช)</p>
+                </div>
+                <button onclick="openRuleModal()" class="bg-farm-600 hover:bg-farm-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs shadow-sm transition-all flex items-center gap-1.5">
+                    <span>+ เพิ่มกฎอัตโนมัติใหม่</span>
+                </button>
+            </div>
+
+            <!-- Rules Grid -->
+            <div id="rulesList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Rendered dynamically by JS -->
+            </div>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- 5. Real-time Activity Log (ประวัติการทำงาน) -->
+        <!-- ========================================== -->
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
+                    <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    ประวัติการทำงานล่าสุด (Activity Stream)
+                </h3>
+                <button onclick="clearActivityLog()" class="text-xs text-slate-400 hover:text-slate-600">ล้างประวัติ</button>
+            </div>
+            <div id="activityLog" class="space-y-2 max-h-48 overflow-y-auto font-mono text-xs text-slate-600 divide-y divide-slate-50">
+                <div class="py-1 text-slate-400 italic">เริ่มต้นระบบควบคุม GreenMind Control Center...</div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- ========================================== -->
+    <!-- MODALS SECTION                             -->
+    <!-- ========================================== -->
+
+    <!-- Modal: Timer Duration Modal -->
+    <div id="timerModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center opacity-0 transition-opacity duration-200">
+        <div class="bg-white w-full max-w-md mx-4 rounded-3xl shadow-2xl overflow-hidden p-6 text-center transform scale-95 transition-transform duration-200" id="timerModalContent">
+            <div id="modalDeviceIcon" class="w-16 h-16 bg-farm-50 text-farm-600 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-3">🚿</div>
+            <h3 class="text-xl font-bold text-slate-800 mb-1">ตั้งเวลาเปิดใช้งาน</h3>
+            <p id="modalDeviceName" class="text-sm text-slate-500 mb-6">วาล์วน้ำเปล่า</p>
+            
+            <div class="flex gap-4 mb-6 text-left">
+                <div class="flex-1">
+                    <label class="block text-xs font-bold text-slate-400 mb-1 uppercase">ระยะเวลา (Duration)</label>
+                    <input type="number" id="timer_val" value="10" min="1" class="w-full bg-slate-50 border border-slate-200 text-slate-800 text-center text-xl font-bold py-3 rounded-xl outline-none focus:border-farm-500">
+                </div>
+                <div class="flex-1">
+                    <label class="block text-xs font-bold text-slate-400 mb-1 uppercase">หน่วย (Unit)</label>
+                    <select id="timer_unit" class="w-full bg-slate-50 border border-slate-200 text-slate-800 text-center text-base font-semibold py-3 rounded-xl outline-none focus:border-farm-500">
+                        <option value="sec">วินาที (Sec)</option>
+                        <option value="min">นาที (Min)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="flex gap-3">
+                <button onclick="closeModal('timerModal')" class="flex-1 py-3 bg-white border border-slate-200 text-slate-600 font-semibold rounded-xl hover:bg-slate-50">ยกเลิก</button>
+                <button onclick="submitTimerAction()" class="flex-1 py-3 bg-farm-600 text-white font-bold rounded-xl hover:bg-farm-700 shadow-md shadow-farm-500/30">เริ่มทำงาน</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Plant Management CRUD Modal -->
+    <div id="plantModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center opacity-0 transition-opacity duration-200">
+        <div class="bg-white w-full max-w-xl mx-4 rounded-3xl shadow-2xl overflow-hidden p-6 max-h-[90vh] overflow-y-auto transform scale-95 transition-transform duration-200" id="plantModalContent">
+            <div class="flex justify-between items-center pb-4 border-b border-slate-100 mb-5">
+                <h3 id="plantModalTitle" class="text-lg font-bold text-slate-800">จัดการข้อมูลพืช (Plant Profile)</h3>
+                <button onclick="closeModal('plantModal')" class="text-slate-400 hover:text-slate-600 text-xl font-bold">&times;</button>
+            </div>
+
+            <form id="plantForm" onsubmit="savePlant(event)" class="space-y-4 text-left">
+                <input type="hidden" id="plant_id">
+                <div>
+                    <label class="block text-xs font-bold text-slate-600 mb-1">ชื่อพืช (Plant Name)</label>
+                    <input type="text" id="plant_name" required placeholder="เช่น ผักบุ้งจีน, กะเพรา" class="w-full bg-slate-50 border border-slate-200 text-slate-800 px-4 py-2.5 rounded-xl outline-none focus:border-farm-500 font-semibold">
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">ความชื้นที่เหมาะสม (%)</label>
+                        <input type="number" id="plant_moisture" step="1" required placeholder="เช่น 75" class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-sm outline-none focus:border-farm-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">อุณหภูมิที่เหมาะสม (°C)</label>
+                        <input type="number" id="plant_temp" step="0.5" required placeholder="เช่น 30" class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-sm outline-none focus:border-farm-500">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">ไนโตรเจน (N)</label>
+                        <input type="number" id="plant_n" required placeholder="เช่น 50" class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-sm outline-none focus:border-farm-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">ฟอสฟอรัส (P)</label>
+                        <input type="number" id="plant_p" required placeholder="เช่น 30" class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-sm outline-none focus:border-farm-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">โพแทสเซียม (K)</label>
+                        <input type="number" id="plant_k" required placeholder="เช่น 40" class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-sm outline-none focus:border-farm-500">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">เวลารดน้ำแต่ละรอบ (วินาที)</label>
+                        <input type="number" id="plant_water_sec" value="15" required class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-sm outline-none focus:border-farm-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">เวลาให้ปุ๋ยแต่ละรอบ (วินาที)</label>
+                        <input type="number" id="plant_fert_sec" value="10" required class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-sm outline-none focus:border-farm-500">
+                    </div>
+                </div>
+
+                <div class="flex justify-between items-center pt-4 border-t border-slate-100">
+                    <button type="button" id="btnDeletePlant" onclick="deleteCurrentPlant()" class="text-xs text-rose-500 hover:text-rose-700 font-semibold hidden">
+                        🗑️ ลบพืชนี้
+                    </button>
+                    <div class="flex gap-2 ml-auto">
+                        <button type="button" onclick="closeModal('plantModal')" class="py-2.5 px-5 bg-white border border-slate-200 text-slate-600 font-semibold rounded-xl text-sm hover:bg-slate-50">ยกเลิก</button>
+                        <button type="submit" class="py-2.5 px-6 bg-farm-600 text-white font-bold rounded-xl text-sm hover:bg-farm-700 shadow-sm">บันทึกข้อมูลพืช</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal: Rule Builder Modal -->
+    <div id="ruleModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center opacity-0 transition-opacity duration-200">
+        <div class="bg-white w-full max-w-lg mx-4 rounded-3xl shadow-2xl overflow-hidden p-6 transform scale-95 transition-transform duration-200" id="ruleModalContent">
+            <div class="flex justify-between items-center pb-4 border-b border-slate-100 mb-5">
+                <h3 class="text-lg font-bold text-slate-800">สร้างกฎอัตโนมัติ (Automation Rule)</h3>
+                <button onclick="closeModal('ruleModal')" class="text-slate-400 hover:text-slate-600 text-xl font-bold">&times;</button>
+            </div>
+
+            <div class="space-y-4 text-left">
+                <div>
+                    <label class="block text-xs font-bold text-slate-600 mb-1">ชื่อกฎ</label>
+                    <input type="text" id="rule_name" placeholder="เช่น รดน้ำเมื่อความชื้นต่ำ" class="w-full bg-slate-50 border border-slate-200 text-slate-800 px-4 py-2.5 rounded-xl outline-none focus:border-farm-500 text-sm">
+                </div>
+
+                <div class="grid grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">เซ็นเซอร์ (IF)</label>
+                        <select id="rule_sensor" class="w-full bg-slate-50 border border-slate-200 text-slate-700 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-farm-500">
+                            <option value="moisture">ความชื้น (%)</option>
+                            <option value="temperature">อุณหภูมิ (°C)</option>
+                            <option value="nitrogen">ไนโตรเจน (N)</option>
+                            <option value="phosphorus">ฟอสฟอรัส (P)</option>
+                            <option value="potassium">โพแทสเซียม (K)</option>
+                            <option value="ph">ค่า pH</option>
+                            <option value="ec">ค่า EC</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">เงื่อนไข</label>
+                        <select id="rule_operator" class="w-full bg-slate-50 border border-slate-200 text-slate-700 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-farm-500">
+                            <option value="<">น้อยกว่า (&lt;)</option>
+                            <option value=">">มากกว่า (&gt;)</option>
+                            <option value="==">เท่ากับ (=)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">ค่าเปรียบเทียบ</label>
+                        <input type="number" id="rule_val" placeholder="เช่น 40" class="w-full bg-slate-50 border border-slate-200 text-slate-800 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-farm-500">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">อุปกรณ์ที่สั่ง (THEN)</label>
+                        <select id="rule_relay" class="w-full bg-slate-50 border border-slate-200 text-slate-700 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-farm-500">
+                            <option value="relay_2">วาล์วน้ำเปล่า</option>
+                            <option value="relay_3">ปั๊มวิตามิน A</option>
+                            <option value="relay_4">ปั๊มวิตามิน B</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">คำสั่ง</label>
+                        <select id="rule_action" class="w-full bg-slate-50 border border-slate-200 text-slate-700 px-3 py-2.5 rounded-xl text-xs outline-none focus:border-farm-500">
+                            <option value="1">เปิด (ON)</option>
+                            <option value="0">ปิด (OFF)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                    <button onclick="closeModal('ruleModal')" class="py-2.5 px-5 bg-white border border-slate-200 text-slate-600 font-semibold rounded-xl text-sm hover:bg-slate-50">ยกเลิก</button>
+                    <button onclick="saveRule()" class="py-2.5 px-6 bg-farm-600 text-white font-bold rounded-xl text-sm hover:bg-farm-700 shadow-sm">บันทึกกฎ</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Settings Modal (MQTT & Endpoints) -->
+    <div id="settingsModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center opacity-0 transition-opacity duration-200">
+        <div class="bg-white w-full max-w-md mx-4 rounded-3xl shadow-2xl overflow-hidden p-6 transform scale-95 transition-transform duration-200" id="settingsModalContent">
+            <div class="flex justify-between items-center pb-4 border-b border-slate-100 mb-5">
+                <h3 class="text-lg font-bold text-slate-800">ตั้งค่าการเชื่อมต่อ (Configuration)</h3>
+                <button onclick="closeModal('settingsModal')" class="text-slate-400 hover:text-slate-600 text-xl font-bold">&times;</button>
+            </div>
+
+            <div class="space-y-4 text-left text-sm">
+                <div>
+                    <label class="block text-xs font-bold text-slate-600 mb-1">MQTT Broker (WebSocket Host)</label>
+                    <input type="text" id="cfg_mqtt_host" value="broker.hivemq.com" class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-xs outline-none focus:border-farm-500 font-mono">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">WSS Port</label>
+                        <input type="number" id="cfg_mqtt_port" value="8884" class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-xs outline-none focus:border-farm-500 font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">Topic Prefix</label>
+                        <input type="text" id="cfg_topic_prefix" value="greenmind_smartfarm_zul" class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-xs outline-none focus:border-farm-500 font-mono">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-600 mb-1">Render AI API Endpoint</label>
+                    <input type="text" id="cfg_render_api" value="https://greenmind-ai-040a.onrender.com/predict" class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-xs outline-none focus:border-farm-500 font-mono">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-600 mb-1">Grafana Dashboard URL</label>
+                    <input type="text" id="cfg_grafana_url" value="https://us-east-1-1.aws.cloud2.influxdata.com" class="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-xs outline-none focus:border-farm-500 font-mono">
+                </div>
+
+                <div class="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                    <button onclick="closeModal('settingsModal')" class="py-2.5 px-5 bg-white border border-slate-200 text-slate-600 font-semibold rounded-xl text-xs hover:bg-slate-50">ปิด</button>
+                    <button onclick="saveSettings()" class="py-2.5 px-6 bg-farm-600 text-white font-bold rounded-xl text-xs hover:bg-farm-700 shadow-sm">บันทึก &amp; เชื่อมต่อใหม่</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed bottom-6 right-6 flex flex-col gap-2.5 max-w-sm"></div>
+
+    <!-- ========================================== -->
+    <!-- APPLICATION JAVASCRIPT LOGIC               -->
+    <!-- ========================================== -->
+    <script>
+        // ==========================================
+        // 1. Initial State & Data Definitions
+        // ==========================================
+        let mqttClient = null;
+        let selectedTargetRelay = '';
+        let lastEspPingTime = 0;
+        let espCheckInterval = null;
+
+        // สถานะของ Relay จากบอร์ด ESP32 (Source of Truth)
+        const relayStates = {
+            relay_1: false, // ปั๊มน้ำหลัก
+            relay_2: false, // วาล์วน้ำเปล่า
+            relay_3: false, // ปั๊มวิตามิน A
+            relay_4: false  // ปั๊มวิตามิน B
+        };
+
+        const relayCountdowns = {
+            relay_1: null,
+            relay_2: null,
+            relay_3: null,
+            relay_4: null
+        };
+
+        // ค่าพารามิเตอร์เซ็นเซอร์ล่าสุด (รับจาก MQTT telemetry หรือ InfluxDB)
+        let currentSensors = {
+            moisture: 75.0,
+            temperature: 30.0,
+            nitrogen: 50.0,
+            phosphorus: 30.0,
+            potassium: 40.0,
+            ph: 6.5,
+            ec: 1.2
+        };
+
+        // การตั้งค่าเริ่มต้น
+        let config = JSON.parse(localStorage.getItem('gm_config')) || {
+            mqtt_host: 'broker.hivemq.com',
+            mqtt_port: 8884,
+            topic_prefix: 'greenmind_smartfarm_zul',
+            render_api: 'https://greenmind-ai-040a.onrender.com/predict',
+            grafana_url: 'https://us-east-1-1.aws.cloud2.influxdata.com',
+            sys_mode: 'manual', // 'manual' or 'auto'
+            target_crop: 'ผักบุ้งจีน'
+        };
+
+        // รายการพืช 15 ชนิดจากชุดข้อมูล AI ล่าสุด (ผู้ใช้เพิ่ม/แก้ไข/ลบได้)
+        const DEFAULT_PLANTS = [
+            { id: 'ผักบุ้งจีน', name: 'ผักบุ้งจีน', moisture: 78, temp: 31.0, n: 50, p: 30, k: 40, water_sec: 15, fert_sec: 10 },
+            { id: 'กวางตุ้ง', name: 'กวางตุ้ง', moisture: 72, temp: 28.5, n: 60, p: 40, k: 50, water_sec: 15, fert_sec: 10 },
+            { id: 'คะน้า', name: 'คะน้า', moisture: 78, temp: 27.0, n: 80, p: 45, k: 60, water_sec: 20, fert_sec: 12 },
+            { id: 'ผักชี', name: 'ผักชี', moisture: 65, temp: 24.0, n: 40, p: 35, k: 35, water_sec: 10, fert_sec: 8 },
+            { id: 'กะเพรา', name: 'กะเพรา', moisture: 58, temp: 31.5, n: 35, p: 25, k: 30, water_sec: 12, fert_sec: 10 },
+            { id: 'พริกขี้หนู', name: 'พริกขี้หนู', moisture: 52, temp: 29.0, n: 20, p: 15, k: 20, water_sec: 15, fert_sec: 12 },
+            { id: 'มะเขือเทศ', name: 'มะเขือเทศ', moisture: 68, temp: 25.0, n: 75, p: 50, k: 65, water_sec: 20, fert_sec: 15 },
+            { id: 'แตงกวา', name: 'แตงกวา', moisture: 72, temp: 29.0, n: 55, p: 40, k: 50, water_sec: 18, fert_sec: 12 },
+            { id: 'ถั่วฝักยาว', name: 'ถั่วฝักยาว', moisture: 58, temp: 28.5, n: 25, p: 35, k: 30, water_sec: 15, fert_sec: 10 },
+            { id: 'ข้าวโพดหวาน', name: 'ข้าวโพดหวาน', moisture: 72, temp: 28.0, n: 90, p: 55, k: 60, water_sec: 25, fert_sec: 15 },
+            { id: 'กะหล่ำปลี', name: 'กะหล่ำปลี', moisture: 72, temp: 21.5, n: 85, p: 50, k: 70, water_sec: 20, fert_sec: 15 },
+            { id: 'กรีนโอ๊ค', name: 'กรีนโอ๊ค', moisture: 65, temp: 23.0, n: 50, p: 35, k: 45, water_sec: 12, fert_sec: 8 },
+            { id: 'ฟักทอง', name: 'ฟักทอง', moisture: 65, temp: 28.0, n: 50, p: 35, k: 60, water_sec: 20, fert_sec: 12 },
+            { id: 'หัวไชเท้า', name: 'หัวไชเท้า', moisture: 65, temp: 20.0, n: 55, p: 35, k: 50, water_sec: 15, fert_sec: 10 },
+            { id: 'กระเทียม', name: 'กระเทียม', moisture: 60, temp: 22.0, n: 45, p: 30, k: 50, water_sec: 12, fert_sec: 8 }
+        ];
+
+        let plants = JSON.parse(localStorage.getItem('gm_plants')) || DEFAULT_PLANTS;
+        let autoRules = JSON.parse(localStorage.getItem('gm_rules')) || [];
+
+        // ==========================================
+        // 2. UI Notifications & Modals
+        // ==========================================
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            let bg = type === 'error' ? 'bg-rose-600' : (type === 'success' ? 'bg-farm-600' : (type === 'warning' ? 'bg-amber-600' : 'bg-slate-800'));
+            toast.className = `${bg} text-white px-5 py-3 rounded-2xl shadow-xl flex items-center gap-3 animate-slide-in text-xs font-semibold`;
+            toast.innerHTML = `<p>${message}</p>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'transition-opacity', 'duration-300');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        function logActivity(text) {
+            const logBox = document.getElementById('activityLog');
+            const now = new Date().toLocaleTimeString('th-TH');
+            const line = document.createElement('div');
+            line.className = 'py-1 flex items-start gap-2';
+            line.innerHTML = `<span class="text-slate-400 shrink-0">[${now}]</span> <span>${text}</span>`;
+            logBox.prepend(line);
+        }
+
+        function clearActivityLog() {
+            document.getElementById('activityLog').innerHTML = '<div class="py-1 text-slate-400 italic">ล้างประวัติเรียบร้อย</div>';
+        }
+
+        function openModal(id) {
+            const modal = document.getElementById(id);
+            const content = document.getElementById(id + 'Content') || modal.firstElementChild;
+            modal.style.display = 'flex';
+            setTimeout(() => {
+                modal.classList.remove('opacity-0');
+                content.classList.remove('scale-95');
+                content.classList.add('scale-100');
+            }, 10);
+        }
+
+        function closeModal(id) {
+            const modal = document.getElementById(id);
+            const content = document.getElementById(id + 'Content') || modal.firstElementChild;
+            modal.classList.add('opacity-0');
+            content.classList.remove('scale-100');
+            content.classList.add('scale-95');
+            setTimeout(() => { modal.style.display = 'none'; }, 200);
+        }
+
+        // ==========================================
+        // 3. MQTT Client Setup (Instant < 50ms)
+        // ==========================================
+        function initMQTT() {
+            const host = config.mqtt_host;
+            const port = config.mqtt_port;
+            const wssUrl = `wss://${host}:${port}/mqtt`;
+
+            const mqttBadge = document.getElementById('mqttStatusBadge');
+            const mqttText = document.getElementById('mqttStatusText');
+
+            mqttText.innerText = 'MQTT: กำลังเชื่อมต่อ...';
+            mqttBadge.className = 'hidden sm:flex text-xs font-semibold bg-amber-50 text-amber-600 px-3 py-1.5 rounded-full items-center gap-2';
+
+            const clientId = 'greenmind_web_' + Math.random().toString(16).substr(2, 8);
+
+            try {
+                if (mqttClient) mqttClient.end(true);
+                mqttClient = mqtt.connect(wssUrl, {
+                    clientId: clientId,
+                    clean: true,
+                    connectTimeout: 4000,
+                    reconnectPeriod: 3000
+                });
+
+                mqttClient.on('connect', () => {
+                    mqttText.innerText = 'MQTT: ONLINE';
+                    mqttBadge.className = 'hidden sm:flex text-xs font-semibold bg-emerald-50 text-farm-600 px-3 py-1.5 rounded-full items-center gap-2';
+                    logActivity(`เชื่อมต่อ MQTT Broker (${host}) สำเร็จ`);
+                    
+                    // Subscribe Topics
+                    const cmdTopic = `${config.topic_prefix}/cmd`;
+                    const statusTopic = `${config.topic_prefix}/status`;
+                    const sensorsTopic = `${config.topic_prefix}/sensors`;
+
+                    mqttClient.subscribe([statusTopic, sensorsTopic], (err) => {
+                        if (!err) logActivity(`พร้อมรับข้อมูลจาก ${config.topic_prefix}/#`);
+                    });
+
+                    // ถามหาสถานะปัจจุบันของ ESP32
+                    sendMqttCommand({ cmd: 'GET_STATUS' });
+                });
+
+                mqttClient.on('message', (topic, message) => {
+                    handleIncomingMqtt(topic, message.toString());
+                });
+
+                mqttClient.on('error', (err) => {
+                    mqttText.innerText = 'MQTT: Error';
+                    mqttBadge.className = 'hidden sm:flex text-xs font-semibold bg-rose-50 text-rose-600 px-3 py-1.5 rounded-full items-center gap-2';
+                });
+
+                mqttClient.on('close', () => {
+                    mqttText.innerText = 'MQTT: Disconnected';
+                    mqttBadge.className = 'hidden sm:flex text-xs font-semibold bg-slate-100 text-slate-500 px-3 py-1.5 rounded-full items-center gap-2';
+                });
+
+            } catch (e) {
+                console.error("MQTT Init Error", e);
+            }
+        }
+
+        function sendMqttCommand(payloadObj) {
+            if (!mqttClient || !mqttClient.connected) {
+                showToast('ยังไม่ได้เชื่อมต่อ MQTT Broker! กำลังเชื่อมต่อใหม่...', 'warning');
+                return false;
+            }
+            const topic = `${config.topic_prefix}/cmd`;
+            mqttClient.publish(topic, JSON.stringify(payloadObj));
+            return true;
+        }
+
+        function handleIncomingMqtt(topic, msgStr) {
+            try {
+                const data = JSON.parse(msgStr);
+                const subTopic = topic.split('/').pop();
+
+                if (subTopic === 'status') {
+                    // รับ Heartbeat & Relay State ยืนยันจาก ESP32
+                    lastEspPingTime = Date.now();
+                    updateEspOnlineBadge(true);
+
+                    if (data.relays) {
+                        relayStates.relay_1 = data.relays.r1 === 1;
+                        relayStates.relay_2 = data.relays.r2 === 1;
+                        relayStates.relay_3 = data.relays.r3 === 1;
+                        relayStates.relay_4 = data.relays.r4 === 1;
+                        syncAllRelayUI();
+                    }
+
+                    if (data.sys_mode && data.sys_mode !== config.sys_mode) {
+                        applyModeUI(data.sys_mode);
+                    }
+                }
+                else if (subTopic === 'sensors') {
+                    // อัปเดตข้อมูลเซ็นเซอร์ที่ ESP32 อ่านได้จริง
+                    lastEspPingTime = Date.now();
+                    updateEspOnlineBadge(true);
+
+                    if (data.moisture !== undefined) currentSensors.moisture = data.moisture;
+                    if (data.temperature !== undefined) currentSensors.temperature = data.temperature;
+                    if (data.nitrogen !== undefined) currentSensors.nitrogen = data.nitrogen;
+                    if (data.phosphorus !== undefined) currentSensors.phosphorus = data.phosphorus;
+                    if (data.potassium !== undefined) currentSensors.potassium = data.potassium;
+                    if (data.ph !== undefined) currentSensors.ph = data.ph;
+                    if (data.ec !== undefined) currentSensors.ec = data.ec;
+
+                    // แสดงผล AI Crop หากส่งมาด้วย
+                    if (data.ai_recommend) {
+                        setAiCropDisplay(data.ai_recommend);
+                    }
+
+                    // ถ้าเป็นโหมด AUTO ประเมินกฎ
+                    if (config.sys_mode === 'auto') {
+                        evaluateAutoRules(currentSensors);
+                    }
+                }
+            } catch (e) {
+                console.error("MQTT Parse Error", e);
+            }
+        }
+
+        // ตรวจสอบสถานะ Online ของ ESP32 ทุก 3 วินาที
+        function startEspLivenessCheck() {
+            if (espCheckInterval) clearInterval(espCheckInterval);
+            espCheckInterval = setInterval(() => {
+                const now = Date.now();
+                // ถ้าไม่ได้รับ status/heartbeat เกิน 20 วินาที ให้ถือว่า OFFLINE
+                if (now - lastEspPingTime > 20000) {
+                    updateEspOnlineBadge(false);
+                }
+            }, 3000);
+        }
+
+        function updateEspOnlineBadge(isOnline) {
+            const badge = document.getElementById('espStatusBadge');
+            const text = document.getElementById('espStatusText');
+            if (isOnline) {
+                badge.className = "text-xs font-semibold bg-emerald-50 text-farm-600 border border-farm-200 px-3 py-1.5 rounded-full flex items-center gap-2 transition-all";
+                badge.firstElementChild.className = "w-2 h-2 rounded-full bg-farm-500 animate-pulse";
+                text.innerText = "ESP32: ONLINE";
+            } else {
+                badge.className = "text-xs font-semibold bg-rose-50 text-rose-600 border border-rose-200 px-3 py-1.5 rounded-full flex items-center gap-2 transition-all";
+                badge.firstElementChild.className = "w-2 h-2 rounded-full bg-rose-500 animate-pulse";
+                text.innerText = "ESP32: OFFLINE";
+            }
+        }
+
+        // ==========================================
+        // 4. Relay UI & Execution Controls
+        // ==========================================
+        function syncAllRelayUI() {
+            ['relay_1', 'relay_2', 'relay_3', 'relay_4'].forEach(id => {
+                const isOn = relayStates[id];
+                const dot = document.getElementById('dot_' + id);
+                const txt = document.getElementById('text_' + id);
+                const btn = document.getElementById('btn_toggle_' + id);
+
+                if (isOn) {
+                    dot.className = "w-3.5 h-3.5 rounded-full bg-farm-500 status-active transition-colors";
+                    txt.innerText = 'ON';
+                    txt.className = "text-xs font-bold text-farm-600 uppercase";
+                    if (btn) {
+                        btn.className = "w-full py-2.5 px-4 bg-rose-500 hover:bg-rose-600 text-white font-semibold rounded-xl text-sm transition-all shadow-md shadow-rose-500/20";
+                        btn.innerText = "ปิดทำงาน";
+                    }
+                } else {
+                    dot.className = "w-3.5 h-3.5 rounded-full bg-slate-300 transition-colors";
+                    txt.innerText = 'OFF';
+                    txt.className = "text-xs font-bold text-slate-400 uppercase";
+                    if (btn) {
+                        btn.className = "w-full py-2.5 px-4 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 font-semibold rounded-xl text-sm transition-all active:scale-98";
+                        btn.innerText = id === 'relay_1' ? 'เปิด/ปิด ปั๊มเมน' : 'เปิดทันที (สลับสถานะ)';
+                    }
+                }
+            });
+        }
+
+        function toggleRelay(relayId, deviceName) {
+            const nextState = !relayStates[relayId];
+            executeRelayCommand(relayId, nextState, 0, deviceName);
+        }
+
+        function executeRelayCommand(relayId, turnOn, durationSec = 0, deviceName = "") {
+            const stateInt = turnOn ? 1 : 0;
+            const success = sendMqttCommand({
+                cmd: 'SET_RELAY',
+                relay: relayId,
+                state: stateInt,
+                duration: durationSec
+            });
+
+            if (success) {
+                logActivity(`[COMMAND] ส่งคำสั่ง ${turnOn ? 'เปิด' : 'ปิด'} ${deviceName} (เวลา: ${durationSec > 0 ? durationSec + ' วิ' : 'ต่อเนื่อง'})`);
+                showToast(`${turnOn ? 'สั่งเปิด' : 'สั่งปิด'} ${deviceName} เรียบร้อย ⚡`, turnOn ? 'success' : 'info');
+
+                // จัดการเวลานับถอยหลังใน UI (Visual Timer)
+                if (relayCountdowns[relayId]) {
+                    clearInterval(relayCountdowns[relayId]);
+                    relayCountdowns[relayId] = null;
+                }
+
+                const countEl = document.getElementById('countdown_' + relayId);
+                if (turnOn && durationSec > 0 && countEl) {
+                    let rem = durationSec;
+                    countEl.innerText = `⏱️ ปิดในอีก ${rem} วิ`;
+                    relayCountdowns[relayId] = setInterval(() => {
+                        rem--;
+                        if (rem <= 0) {
+                            clearInterval(relayCountdowns[relayId]);
+                            relayCountdowns[relayId] = null;
+                            countEl.innerText = '';
+                        } else {
+                            countEl.innerText = `⏱️ ปิดในอีก ${rem} วิ`;
+                        }
+                    }, 1000);
+                } else if (countEl) {
+                    countEl.innerText = '';
+                }
+            }
+        }
+
+        function openTimerModal(relayId, deviceName, icon) {
+            selectedTargetRelay = relayId;
+            document.getElementById('modalDeviceName').innerText = deviceName;
+            document.getElementById('modalDeviceIcon').innerText = icon;
+            document.getElementById('timer_val').value = 10;
+            openModal('timerModal');
+        }
+
+        function submitTimerAction() {
+            const val = parseInt(document.getElementById('timer_val').value) || 10;
+            const unit = document.getElementById('timer_unit').value;
+            const totalSec = unit === 'min' ? val * 60 : val;
+            const devName = document.getElementById('modalDeviceName').innerText;
+
+            executeRelayCommand(selectedTargetRelay, true, totalSec, devName);
+            closeModal('timerModal');
+        }
+
+        function emergencyStop() {
+            sendMqttCommand({ cmd: 'STOP_ALL' });
+            logActivity(`[EMERGENCY] กดปุ่มหยุดอุปกรณ์ฉุกเฉินทั้งหมด!`);
+            showToast('สั่งดับอุปกรณ์ทั้งหมดเรียบร้อยแล้ว!', 'error');
+
+            ['relay_1', 'relay_2', 'relay_3', 'relay_4'].forEach(id => {
+                if (relayCountdowns[id]) {
+                    clearInterval(relayCountdowns[id]);
+                    relayCountdowns[id] = null;
+                }
+                const countEl = document.getElementById('countdown_' + id);
+                if (countEl) countEl.innerText = '';
+            });
+        }
+
+        // ==========================================
+        // 5. System Mode Management (Auto / Manual)
+        // ==========================================
+        function setSystemMode(mode) {
+            config.sys_mode = mode;
+            localStorage.setItem('gm_config', JSON.stringify(config));
+            applyModeUI(mode);
+
+            sendMqttCommand({
+                cmd: 'SET_MODE',
+                mode: mode
+            });
+
+            logActivity(`[MODE] สลับเป็นโหมด ${mode === 'auto' ? 'AUTO (อัตโนมัติ)' : 'MANUAL (ควบคุมเอง)'}`);
+            showToast(mode === 'auto' ? 'เปิดโหมด AUTO ทำงานตามกฎอัตโนมัติ' : 'เข้าสู่โหมด MANUAL ควบคุมอุปกรณ์ได้อิสระ', 'info');
+        }
+
+        function applyModeUI(mode) {
+            const btnManual = document.getElementById('btnModeManual');
+            const btnAuto = document.getElementById('btnModeAuto');
+
+            if (mode === 'auto') {
+                btnAuto.className = "flex-1 sm:flex-initial py-2.5 px-6 rounded-lg font-semibold text-sm transition-all bg-farm-600 text-white shadow-sm";
+                btnManual.className = "flex-1 sm:flex-initial py-2.5 px-6 rounded-lg font-semibold text-sm transition-all text-slate-500 hover:text-slate-800";
+            } else {
+                btnManual.className = "flex-1 sm:flex-initial py-2.5 px-6 rounded-lg font-semibold text-sm transition-all bg-white text-slate-800 shadow-sm";
+                btnAuto.className = "flex-1 sm:flex-initial py-2.5 px-6 rounded-lg font-semibold text-sm transition-all text-slate-500 hover:text-slate-800";
+            }
+        }
+
+        // ==========================================
+        // 6. Target Plant & AI Recommender
+        // ==========================================
+        function renderPlantDropdown() {
+            const select = document.getElementById('targetCropSelect');
+            select.innerHTML = '';
+
+            plants.forEach(plant => {
+                const opt = document.createElement('option');
+                opt.value = plant.id;
+                opt.innerText = `🌱 ${plant.name} (ชื้น: ${plant.moisture}%, N:${plant.n}, P:${plant.p}, K:${plant.k})`;
+                if (plant.id === config.target_crop) opt.selected = true;
+                select.appendChild(opt);
+            });
+
+            renderPlantRequirements();
+        }
+
+        function onTargetCropChanged() {
+            const select = document.getElementById('targetCropSelect');
+            config.target_crop = select.value;
+            localStorage.setItem('gm_config', JSON.stringify(config));
+
+            renderPlantRequirements();
+            generateRulesForPlant(select.value);
+
+            logActivity(`[PLANT] เลือกเป้าหมายการปลูก: ${select.value}`);
+            showToast(`เลือกเป้าหมาย: ${select.value} พร้อมอัปเดตกฎอัตโนมัติ`, 'success');
+
+            sendMqttCommand({
+                cmd: 'SET_CROP',
+                crop: select.value
+            });
+        }
+
+        function renderPlantRequirements() {
+            const current = plants.find(p => p.id === config.target_crop) || plants[0];
+            const bar = document.getElementById('plantRequirementsBar');
+            if (!current || !bar) return;
+
+            bar.innerHTML = `
+                <div class="bg-slate-50 border border-slate-200 p-2 rounded-xl">
+                    <span class="text-slate-400 block">ความชื้นดิน</span>
+                    <b class="text-slate-800 text-sm">${current.moisture}%</b>
+                </div>
+                <div class="bg-slate-50 border border-slate-200 p-2 rounded-xl">
+                    <span class="text-slate-400 block">อุณหภูมิ</span>
+                    <b class="text-slate-800 text-sm">${current.temp}°C</b>
+                </div>
+                <div class="bg-slate-50 border border-slate-200 p-2 rounded-xl">
+                    <span class="text-slate-400 block">ไนโตรเจน (N)</span>
+                    <b class="text-slate-800 text-sm">${current.n}</b>
+                </div>
+                <div class="bg-slate-50 border border-slate-200 p-2 rounded-xl">
+                    <span class="text-slate-400 block">ฟอสฟอรัส (P)</span>
+                    <b class="text-slate-800 text-sm">${current.p}</b>
+                </div>
+                <div class="bg-slate-50 border border-slate-200 p-2 rounded-xl">
+                    <span class="text-slate-400 block">โพแทสเซียม (K)</span>
+                    <b class="text-slate-800 text-sm">${current.k}</b>
+                </div>
+            `;
+        }
+
+        function generateRulesForPlant(plantId) {
+            const p = plants.find(item => item.id === plantId);
+            if (!p) return;
+
+            // กรองเอากฎของพืชอื่นออก แต่เก็บกฎกำหนดเองไว้
+            autoRules = autoRules.filter(r => !r.isPlantRule);
+
+            // สร้างกฎเฉพาะสำหรับพืชนี้
+            autoRules.push({
+                id: 'rule_' + Date.now() + '_1',
+                name: `ดินแห้ง (รดน้ำ ${p.name})`,
+                sensor: 'moisture',
+                operator: '<',
+                value: p.moisture - 5,
+                relay: 'relay_2',
+                action: 1,
+                duration: p.water_sec || 15,
+                active: true,
+                isPlantRule: true
+            });
+
+            autoRules.push({
+                id: 'rule_' + Date.now() + '_2',
+                name: `ดินชุ่มพอ (หยุดรดน้ำ)`,
+                sensor: 'moisture',
+                operator: '>',
+                value: p.moisture + 5,
+                relay: 'relay_2',
+                action: 0,
+                duration: 0,
+                active: true,
+                isPlantRule: true
+            });
+
+            autoRules.push({
+                id: 'rule_' + Date.now() + '_3',
+                name: `เสริมธาตุ N, K (${p.name})`,
+                sensor: 'potassium',
+                operator: '<',
+                value: p.k - 5,
+                relay: 'relay_3',
+                action: 1,
+                duration: p.fert_sec || 10,
+                active: true,
+                isPlantRule: true
+            });
+
+            autoRules.push({
+                id: 'rule_' + Date.now() + '_4',
+                name: `เสริมฟอสฟอรัส P (${p.name})`,
+                sensor: 'phosphorus',
+                operator: '<',
+                value: p.p - 5,
+                relay: 'relay_4',
+                action: 1,
+                duration: p.fert_sec || 10,
+                active: true,
+                isPlantRule: true
+            });
+
+            localStorage.setItem('gm_rules', JSON.stringify(autoRules));
+            renderRules();
+        }
+
+        // ==========================================
+        // 7. Plant CRUD Modals
+        // ==========================================
+        function openPlantModal(plantToEdit = null) {
+            const form = document.getElementById('plantForm');
+            form.reset();
+
+            const title = document.getElementById('plantModalTitle');
+            const btnDel = document.getElementById('btnDeletePlant');
+
+            if (plantToEdit) {
+                title.innerText = 'แก้ไขข้อมูลพืช: ' + plantToEdit.name;
+                document.getElementById('plant_id').value = plantToEdit.id;
+                document.getElementById('plant_name').value = plantToEdit.name;
+                document.getElementById('plant_moisture').value = plantToEdit.moisture;
+                document.getElementById('plant_temp').value = plantToEdit.temp;
+                document.getElementById('plant_n').value = plantToEdit.n;
+                document.getElementById('plant_p').value = plantToEdit.p;
+                document.getElementById('plant_k').value = plantToEdit.k;
+                document.getElementById('plant_water_sec').value = plantToEdit.water_sec || 15;
+                document.getElementById('plant_fert_sec').value = plantToEdit.fert_sec || 10;
+                btnDel.classList.remove('hidden');
+            } else {
+                title.innerText = 'เพิ่มพืชใหม่ลงในระบบ';
+                document.getElementById('plant_id').value = '';
+                btnDel.classList.add('hidden');
+            }
+            openModal('plantModal');
+        }
+
+        function editCurrentPlant() {
+            const p = plants.find(item => item.id === config.target_crop);
+            if (p) openPlantModal(p);
+        }
+
+        function savePlant(e) {
+            e.preventDefault();
+            const id = document.getElementById('plant_id').value;
+            const name = document.getElementById('plant_name').value.trim();
+            const moisture = parseFloat(document.getElementById('plant_moisture').value);
+            const temp = parseFloat(document.getElementById('plant_temp').value);
+            const n = parseFloat(document.getElementById('plant_n').value);
+            const p = parseFloat(document.getElementById('plant_p').value);
+            const k = parseFloat(document.getElementById('plant_k').value);
+            const water_sec = parseInt(document.getElementById('plant_water_sec').value) || 15;
+            const fert_sec = parseInt(document.getElementById('plant_fert_sec').value) || 10;
+
+            if (id) {
+                // Update
+                const idx = plants.findIndex(item => item.id === id);
+                if (idx !== -1) {
+                    plants[idx] = { id, name, moisture, temp, n, p, k, water_sec, fert_sec };
+                }
+                showToast(`บันทึกข้อมูล ${name} สำเร็จ`, 'success');
+            } else {
+                // Add new
+                const newId = name;
+                plants.push({ id: newId, name, moisture, temp, n, p, k, water_sec, fert_sec });
+                config.target_crop = newId;
+                showToast(`เพิ่มพืช ${name} ลงในระบบเรียบร้อย`, 'success');
+            }
+
+            localStorage.setItem('gm_plants', JSON.stringify(plants));
+            localStorage.setItem('gm_config', JSON.stringify(config));
+
+            renderPlantDropdown();
+            closeModal('plantModal');
+        }
+
+        function deleteCurrentPlant() {
+            const id = document.getElementById('plant_id').value;
+            if (!id) return;
+            if (confirm(`คุณต้องการลบข้อมูลพืช "${id}" หรือไม่?`)) {
+                plants = plants.filter(p => p.id !== id);
+                if (config.target_crop === id) {
+                    config.target_crop = plants[0] ? plants[0].id : '';
+                }
+                localStorage.setItem('gm_plants', JSON.stringify(plants));
+                localStorage.setItem('gm_config', JSON.stringify(config));
+                renderPlantDropdown();
+                closeModal('plantModal');
+                showToast(`ลบพืช ${id} สำเร็จ`, 'info');
+            }
+        }
+
+        // ==========================================
+        // 8. AI Prediction (Render API Integration)
+        // ==========================================
+        function fetchAiPrediction() {
+            const apiUrl = config.render_api;
+            const cropNameEl = document.getElementById('aiCropName');
+            const cropDescEl = document.getElementById('aiCropDesc');
+
+            cropNameEl.innerText = 'กำลังคำนวณ...';
+
+            fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    N: currentSensors.nitrogen,
+                    P: currentSensors.phosphorus,
+                    K: currentSensors.potassium,
+                    temperature: currentSensors.temperature,
+                    humidity: currentSensors.moisture
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success' && data.recommended_crop) {
+                    setAiCropDisplay(data.recommended_crop);
+                    logActivity(`[AI RENDER] โมเดลแนะนำพืช: ${data.recommended_crop}`);
+                } else {
+                    cropNameEl.innerText = 'AI ตอบกลับไม่ถูกต้อง';
+                }
+            })
+            .catch(err => {
+                console.error("AI API Error", err);
+                cropNameEl.innerText = 'เชื่อมต่อ Render AI ไม่ได้';
+                cropDescEl.innerText = 'กำลังปลุกเซิร์ฟเวอร์ Render (กรุณารอ 20 วินาทีแล้วลองใหม่)';
+            });
+        }
+
+        function setAiCropDisplay(cropName) {
+            document.getElementById('aiCropName').innerText = cropName;
+            const matchPlant = plants.find(p => p.name === cropName || p.id === cropName);
+            if (matchPlant) {
+                document.getElementById('aiCropDesc').innerText = `ความชื้นเหมาะสม: ${matchPlant.moisture}% • Temp: ${matchPlant.temp}°C • N:${matchPlant.n} P:${matchPlant.p} K:${matchPlant.k}`;
+            } else {
+                document.getElementById('aiCropDesc').innerText = `ตรงกับสเปกพืชที่ผ่านการเทรนจากชุดข้อมูล AI ล่าสุด`;
+            }
+        }
+
+        function applyAiRecommendation() {
+            const aiCrop = document.getElementById('aiCropName').innerText;
+            if (!aiCrop || aiCrop.includes('...') || aiCrop.includes('ไม่ได้')) {
+                showToast('ยังไม่มีข้อมูลผลวิเคราะห์จาก AI', 'warning');
+                return;
+            }
+
+            const plant = plants.find(p => p.name === aiCrop || p.id === aiCrop);
+            if (plant) {
+                config.target_crop = plant.id;
+                renderPlantDropdown();
+                onTargetCropChanged();
+                showToast(`นำสูตร AI: "${aiCrop}" มาเป็นเป้าหมายสำเร็จ! 🚀`, 'success');
+            } else {
+                showToast(`ตรวจพบ ${aiCrop} ในโมเดล แต่ยังไม่มีในรายชื่อพืช`, 'info');
+            }
+        }
+
+        // ==========================================
+        // 9. Smart Rules System
+        // ==========================================
+        function renderRules() {
+            const list = document.getElementById('rulesList');
+            list.innerHTML = '';
+
+            if (autoRules.length === 0) {
+                list.innerHTML = `<div class="col-span-full text-center py-10 text-slate-400 bg-white rounded-2xl border border-slate-100">ยังไม่มีกฎอัตโนมัติ กดปุ่มด้านบนเพื่อสร้างกฎใหม่</div>`;
+                return;
+            }
+
+            autoRules.forEach((rule, idx) => {
+                const relayName = rule.relay === 'relay_2' ? 'วาล์วน้ำเปล่า' : (rule.relay === 'relay_3' ? 'ปั๊มวิตามิน A' : 'ปั๊มวิตามิน B');
+                const actionBadge = rule.action === 1
+                    ? `<span class="bg-farm-100 text-farm-700 font-bold px-2 py-0.5 rounded border border-farm-200">เปิด (ON)</span>`
+                    : `<span class="bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded border border-rose-200">ปิด (OFF)</span>`;
+
+                const card = document.createElement('div');
+                card.className = `bg-white border ${rule.active ? 'border-l-4 border-l-farm-500 shadow-sm' : 'border-slate-200 opacity-60'} rounded-2xl p-5 flex flex-col justify-between transition-all`;
+                card.innerHTML = `
+                    <div>
+                        <div class="flex justify-between items-start mb-3">
+                            <h4 class="font-bold text-slate-800 text-base">${rule.name}</h4>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" class="sr-only peer" ${rule.active ? 'checked' : ''} onchange="toggleRuleActive(${idx})">
+                                <div class="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-farm-500"></div>
+                            </label>
+                        </div>
+                        <div class="text-xs space-y-1.5 mb-4 text-slate-600 font-medium">
+                            <div class="flex items-center gap-1.5">
+                                <span class="font-bold text-indigo-600 w-8">IF</span>
+                                <span>${rule.sensor}</span>
+                                <b class="text-sm font-bold text-slate-800">${rule.operator}</b>
+                                <span class="bg-slate-100 px-1.5 py-0.5 rounded font-mono">${rule.value}</span>
+                            </div>
+                            <div class="flex items-center gap-1.5">
+                                <span class="font-bold text-farm-600 w-8">THEN</span>
+                                ${actionBadge}
+                                <span>${relayName}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex justify-between items-center pt-3 border-t border-slate-100 text-xs">
+                        <span class="text-slate-400">${rule.duration > 0 ? '⏱️ นาน ' + rule.duration + ' วิ' : 'คำสั่งต่อเนื่อง'}</span>
+                        <button onclick="deleteRule(${idx})" class="text-rose-500 hover:text-rose-700 font-semibold">🗑️ ลบกฎ</button>
+                    </div>
+                `;
+                list.appendChild(card);
+            });
+        }
+
+        function toggleRuleActive(index) {
+            autoRules[index].active = !autoRules[index].active;
+            localStorage.setItem('gm_rules', JSON.stringify(autoRules));
+            renderRules();
+        }
+
+        function deleteRule(index) {
+            if (confirm('คุณต้องการลบกฎนี้หรือไม่?')) {
+                autoRules.splice(index, 1);
+                localStorage.setItem('gm_rules', JSON.stringify(autoRules));
+                renderRules();
+                showToast('ลบกฎเรียบร้อย', 'info');
+            }
+        }
+
+        function openRuleModal() {
+            document.getElementById('rule_name').value = '';
+            document.getElementById('rule_val').value = '';
+            openModal('ruleModal');
+        }
+
+        function saveRule() {
+            const name = document.getElementById('rule_name').value.trim() || 'กฎอัตโนมัติ';
+            const sensor = document.getElementById('rule_sensor').value;
+            const operator = document.getElementById('rule_operator').value;
+            const value = parseFloat(document.getElementById('rule_val').value);
+            const relay = document.getElementById('rule_relay').value;
+            const action = parseInt(document.getElementById('rule_action').value);
+
+            if (isNaN(value)) {
+                showToast('กรุณาระบุค่าตัวเลขในการเปรียบเทียบ', 'error');
+                return;
+            }
+
+            autoRules.push({
+                id: 'rule_' + Date.now(),
+                name,
+                sensor,
+                operator,
+                value,
+                relay,
+                action,
+                duration: 15,
+                active: true,
+                isPlantRule: false
+            });
+
+            localStorage.setItem('gm_rules', JSON.stringify(autoRules));
+            renderRules();
+            closeModal('ruleModal');
+            showToast('บันทึกกฎใหม่สำเร็จ!', 'success');
+        }
+
+        function evaluateAutoRules(sensors) {
+            autoRules.forEach(rule => {
+                if (!rule.active) return;
+                const currentVal = sensors[rule.sensor];
+                if (currentVal === undefined) return;
+
+                let triggered = false;
+                if (rule.operator === '<' && currentVal < rule.value) triggered = true;
+                else if (rule.operator === '>' && currentVal > rule.value) triggered = true;
+                else if (rule.operator === '==' && currentVal === rule.value) triggered = true;
+
+                if (triggered) {
+                    const wantState = rule.action === 1;
+                    if (relayStates[rule.relay] !== wantState) {
+                        logActivity(`[AUTO RULE TRIGGER] กฎ "${rule.name}" ทำงาน (${rule.sensor}: ${currentVal} ${rule.operator} ${rule.value})`);
+                        executeRelayCommand(rule.relay, wantState, rule.duration || 0, rule.name);
+                    }
+                }
+            });
+        }
+
+        // ==========================================
+        // 10. Settings Configuration
+        // ==========================================
+        function saveSettings() {
+            config.mqtt_host = document.getElementById('cfg_mqtt_host').value.trim();
+            config.mqtt_port = parseInt(document.getElementById('cfg_mqtt_port').value) || 8884;
+            config.topic_prefix = document.getElementById('cfg_topic_prefix').value.trim();
+            config.render_api = document.getElementById('cfg_render_api').value.trim();
+            config.grafana_url = document.getElementById('cfg_grafana_url').value.trim();
+
+            localStorage.setItem('gm_config', JSON.stringify(config));
+            document.getElementById('grafanaLink').href = config.grafana_url;
+
+            closeModal('settingsModal');
+            showToast('บันทึกการตั้งค่าแล้ว กำลังเชื่อมต่อใหม่...', 'success');
+            initMQTT();
+        }
+
+        // ==========================================
+        // 11. Lifecycle Entry Point
+        // ==========================================
+        window.addEventListener('DOMContentLoaded', () => {
+            // โหลด Config ไปใส่ช่องตั้งค่า
+            document.getElementById('cfg_mqtt_host').value = config.mqtt_host;
+            document.getElementById('cfg_mqtt_port').value = config.mqtt_port;
+            document.getElementById('cfg_topic_prefix').value = config.topic_prefix;
+            document.getElementById('cfg_render_api').value = config.render_api;
+            document.getElementById('cfg_grafana_url').value = config.grafana_url;
+            document.getElementById('grafanaLink').href = config.grafana_url;
+
+            applyModeUI(config.sys_mode);
+            renderPlantDropdown();
+
+            // ถ้ารายการกฎว่างเปล่า ให้สร้างกฎเริ่มต้นสำหรับพืชปัจจุบัน
+            if (autoRules.length === 0) {
+                generateRulesForPlant(config.target_crop);
+            } else {
+                renderRules();
+            }
+
+            syncAllRelayUI();
+            initMQTT();
+            startEspLivenessCheck();
+
+            // เรียก Render AI ครั้งแรกหลังจากโหลดหน้าเว็บ 2 วินาที
+            setTimeout(fetchAiPrediction, 2000);
+        });
+    </script>
+</body>
+</html>
