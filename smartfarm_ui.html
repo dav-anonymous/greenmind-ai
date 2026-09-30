@@ -857,40 +857,67 @@
 
         function executeRelayCommand(relayId, turnOn, durationSec = 0, deviceName = "") {
             const stateInt = turnOn ? 1 : 0;
-            const success = sendMqttCommand({
+            
+            // 1. Optimistic UI Update: อัปเดตสถานะบนหน้าจอทันทีเพื่อความรวดเร็ว
+            relayStates[relayId] = turnOn;
+            if (relayId !== 'relay_1' && turnOn) {
+                relayStates.relay_1 = true; // ปั๊มหลักเปิดอัตโนมัติเมื่อเปิดวาล์วหรือปั๊มปุ๋ย
+            } else if (!relayStates.relay_2 && !relayStates.relay_3 && !relayStates.relay_4) {
+                relayStates.relay_1 = false;
+            }
+            syncAllRelayUI();
+
+            // 2. ส่งคำสั่ง Real-time ผ่าน MQTT (<50ms สำหรับ ESP32 เฟิร์มแวร์ใหม่)
+            sendMqttCommand({
                 cmd: 'SET_RELAY',
                 relay: relayId,
                 state: stateInt,
                 duration: durationSec
             });
 
-            if (success) {
-                logActivity(`[COMMAND] ส่งคำสั่ง ${turnOn ? 'เปิด' : 'ปิด'} ${deviceName} (เวลา: ${durationSec > 0 ? durationSec + ' วิ' : 'ต่อเนื่อง'})`);
-                showToast(`${turnOn ? 'สั่งเปิด' : 'สั่งปิด'} ${deviceName} เรียบร้อย ⚡`, turnOn ? 'success' : 'info');
+            // 3. Dual-Dispatch: ส่งสำรองเข้า InfluxDB control_command 
+            // (เพื่อให้บอร์ด ESP32 ที่ยังใช้เฟิร์มแวร์เดิมยังคงทำงานได้ตามปกติ!)
+            const r1Val = relayStates.relay_1 ? 1 : 0;
+            const r2Val = relayStates.relay_2 ? 1 : 0;
+            const r3Val = relayStates.relay_3 ? 1 : 0;
+            const r4Val = relayStates.relay_4 ? 1 : 0;
+            const influxLine = `control_command,device=esp32 sys_mode="${config.sys_mode}",target_crop="${config.target_crop}",relay_1=${r1Val}.0,relay_2=${r2Val}.0,relay_3=${r3Val}.0,relay_4=${r4Val}.0,duration_sec=${durationSec}.0`;
+            
+            fetch('https://us-east-1-1.aws.cloud2.influxdata.com/api/v2/write?org=zzuull3359@gmail.com&bucket=soil_data&precision=s', {
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Token ySs2861MfvA-m7qVWpgbWnpRfXHR_n2XJaGrO5U8XHABvZiZijSfBHbLFHRtITTQ0k1MP88e7U0CIidq9cgtfQ==',
+                    'Content-Type': 'text/plain; charset=utf-8'
+                },
+                body: influxLine
+            }).catch(err => console.warn('Influx fallback error:', err));
 
-                // จัดการเวลานับถอยหลังใน UI (Visual Timer)
-                if (relayCountdowns[relayId]) {
-                    clearInterval(relayCountdowns[relayId]);
-                    relayCountdowns[relayId] = null;
-                }
+            logActivity(`[COMMAND] สั่งการ ${turnOn ? 'เปิด' : 'ปิด'} ${deviceName} (เวลา: ${durationSec > 0 ? durationSec + ' วิ' : 'ต่อเนื่อง'})`);
+            showToast(`${turnOn ? 'เปิด' : 'ปิด'} ${deviceName} เรียบร้อย ⚡`, turnOn ? 'success' : 'info');
 
-                const countEl = document.getElementById('countdown_' + relayId);
-                if (turnOn && durationSec > 0 && countEl) {
-                    let rem = durationSec;
-                    countEl.innerText = `⏱️ ปิดในอีก ${rem} วิ`;
-                    relayCountdowns[relayId] = setInterval(() => {
-                        rem--;
-                        if (rem <= 0) {
-                            clearInterval(relayCountdowns[relayId]);
-                            relayCountdowns[relayId] = null;
-                            countEl.innerText = '';
-                        } else {
-                            countEl.innerText = `⏱️ ปิดในอีก ${rem} วิ`;
-                        }
-                    }, 1000);
-                } else if (countEl) {
-                    countEl.innerText = '';
-                }
+            // 4. จัดการเวลานับถอยหลังใน UI (Visual Countdown Timer)
+            if (relayCountdowns[relayId]) {
+                clearInterval(relayCountdowns[relayId]);
+                relayCountdowns[relayId] = null;
+            }
+
+            const countEl = document.getElementById('countdown_' + relayId);
+            if (turnOn && durationSec > 0 && countEl) {
+                let rem = durationSec;
+                countEl.innerText = `⏱️ ปิดในอีก ${rem} วิ`;
+                relayCountdowns[relayId] = setInterval(() => {
+                    rem--;
+                    if (rem <= 0) {
+                        clearInterval(relayCountdowns[relayId]);
+                        relayCountdowns[relayId] = null;
+                        countEl.innerText = '';
+                        executeRelayCommand(relayId, false, 0, deviceName);
+                    } else {
+                        countEl.innerText = `⏱️ ปิดในอีก ${rem} วิ`;
+                    }
+                }, 1000);
+            } else if (countEl) {
+                countEl.innerText = '';
             }
         }
 
@@ -913,7 +940,24 @@
         }
 
         function emergencyStop() {
+            relayStates.relay_1 = false;
+            relayStates.relay_2 = false;
+            relayStates.relay_3 = false;
+            relayStates.relay_4 = false;
+            syncAllRelayUI();
+
             sendMqttCommand({ cmd: 'STOP_ALL' });
+
+            const influxLine = `control_command,device=esp32 sys_mode="${config.sys_mode}",target_crop="${config.target_crop}",relay_1=0.0,relay_2=0.0,relay_3=0.0,relay_4=0.0,duration_sec=0.0`;
+            fetch('https://us-east-1-1.aws.cloud2.influxdata.com/api/v2/write?org=zzuull3359@gmail.com&bucket=soil_data&precision=s', {
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Token ySs2861MfvA-m7qVWpgbWnpRfXHR_n2XJaGrO5U8XHABvZiZijSfBHbLFHRtITTQ0k1MP88e7U0CIidq9cgtfQ==',
+                    'Content-Type': 'text/plain; charset=utf-8'
+                },
+                body: influxLine
+            }).catch(err => console.warn('Influx fallback error:', err));
+
             logActivity(`[EMERGENCY] กดปุ่มหยุดอุปกรณ์ฉุกเฉินทั้งหมด!`);
             showToast('สั่งดับอุปกรณ์ทั้งหมดเรียบร้อยแล้ว!', 'error');
 
